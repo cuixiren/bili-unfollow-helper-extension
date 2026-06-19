@@ -46,6 +46,7 @@
       headers: payload.headers || {},
       body: payload.autoCsrf ? withAutoCsrf(payload.body) : payload.body || undefined,
       credentials: "include",
+      referrer: payload.referrer || location.href,
       referrerPolicy: "strict-origin-when-cross-origin",
       signal: controller.signal,
     }).finally(() => window.clearTimeout(timeout));

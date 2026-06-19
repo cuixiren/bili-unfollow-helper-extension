@@ -4,7 +4,26 @@
   const APP_ID = "bili-unfollow-helper-root";
   const STORAGE_KEY = "biliUnfollowHelperSettings";
   const PAGE_API_CHANNEL = "buh-page-api-v1";
-  const SETTINGS_VERSION = 14;
+  const SETTINGS_VERSION = 15;
+  const DYNAMIC_FEED_FEATURES = [
+    "itemOpusStyle",
+    "listOnlyfans",
+    "opusBigCover",
+    "onlyfansVote",
+    "forwardListHidden",
+    "decorationCard",
+    "commentsNewVersion",
+    "onlyfansAssetsV2",
+    "ugcDelete",
+    "onlyfansQaCard",
+    "avatarAutoTheme",
+    "sunflowerStyle",
+    "cardsEnhance",
+    "eva3CardOpus",
+    "eva3CardVideo",
+    "eva3CardComment",
+    "eva3CardUser",
+  ].join(",");
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     targetName: "账号已注销",
@@ -462,7 +481,7 @@
 
   function summarizeInactiveSettings() {
     const bannedText = state.settings.includeBannedAccount ? "含封禁" : "不含封禁";
-    return `未投稿 ${state.settings.inactiveMonths} 个月，检查 ${state.settings.inactiveCheckLimit} 个，${bannedText}，上限 ${state.settings.inactiveMaxActions}，间隔 ${delayText("inactive")}`;
+    return `未投稿/未发动态 ${state.settings.inactiveMonths} 个月，检查 ${state.settings.inactiveCheckLimit} 个，${bannedText}，上限 ${state.settings.inactiveMaxActions}，间隔 ${delayText("inactive")}`;
   }
 
   function candidateModeFromSource(source) {
@@ -618,7 +637,7 @@
       type: "buhApiFetch",
       method: options.method || "GET",
       url: url.href,
-      referrer: location.href,
+      referrer: options.referrer || location.href,
       headers: options.headers || {},
       autoCsrf: Boolean(options.autoCsrf),
       timeoutMs: options.timeoutMs || 15000,
@@ -716,6 +735,46 @@
       if (Number.isFinite(seconds) && seconds > 0) return seconds;
     }
     return 0;
+  }
+
+  function dynamicCreatedSeconds(dynamic) {
+    const candidates = [
+      dynamic?.modules?.module_author?.pub_ts,
+      dynamic?.modules?.module_author?.pub_time,
+      dynamic?.basic?.pub_ts,
+      dynamic?.pub_ts,
+      dynamic?.timestamp,
+      dynamic?.created,
+      dynamic?.ctime,
+    ];
+
+    for (const value of candidates) {
+      const seconds = normalizeTimestampSeconds(value);
+      if (Number.isFinite(seconds) && seconds > 0) return seconds;
+    }
+    return 0;
+  }
+
+  function dynamicTitle(dynamic) {
+    const moduleDynamic = dynamic?.modules?.module_dynamic || {};
+    const major = moduleDynamic.major || {};
+    const candidates = [
+      moduleDynamic.desc?.text,
+      major.opus?.title,
+      major.opus?.summary?.text,
+      major.archive?.title,
+      major.article?.title,
+      major.live_rcmd?.title,
+      major.draw?.title,
+      dynamic?.modules?.module_author?.pub_action,
+      dynamic?.type,
+    ];
+
+    for (const value of candidates) {
+      const title = normalizeText(value);
+      if (title) return title.slice(0, 60);
+    }
+    return "";
   }
 
   function isBannedAccountPayload(payload) {
@@ -901,12 +960,15 @@
       : latestInfo.reason === "banned"
         ? "账号异常"
         : "从未投稿";
+    const latestDynamicDate = latestInfo.latestDynamicPubdate
+      ? formatDate(latestInfo.latestDynamicPubdate)
+      : latestInfo.reason === "banned"
+        ? "账号异常"
+        : "从未发动态";
     const reason =
-      latestInfo.reason === "never-posted"
-        ? "从未投稿"
-        : latestInfo.reason === "banned"
-          ? "已封禁或账号异常"
-        : `${state.settings.inactiveMonths} 个月未投稿`;
+      latestInfo.reason === "banned"
+        ? "已封禁或账号异常"
+        : `${state.settings.inactiveMonths} 个月未投稿/未发动态`;
 
     return {
       key,
@@ -922,9 +984,12 @@
       note: existing ? existing.note : reason,
       latestDate,
       latestTitle: normalizeText(latestInfo.latestTitle || ""),
+      latestDynamicDate,
+      latestDynamicTitle: normalizeText(latestInfo.latestDynamicTitle || ""),
       totalVideos: Number(latestInfo.totalVideos || 0),
       details: [
         `最近投稿：${latestDate}`,
+        `最近动态：${latestDynamicDate}`,
         `视频数：${Number(latestInfo.totalVideos || 0)}`,
         reason,
       ],
@@ -1053,7 +1118,7 @@
 
   async function getNavForWbi() {
     const payload = await apiFetch("/x/web-interface/nav", {
-      label: "近期未投稿登录态",
+      label: "活跃度检查登录态",
     });
     assertApiOk(payload, "读取网页登录态失败");
     if (!payload.data?.isLogin) {
@@ -1096,7 +1161,7 @@
       renderStatus();
 
       const payload = await apiFetch("/x/relation/followings", {
-        label: `近期未投稿关注列表第 ${pn} 页`,
+        label: `活跃度检查关注列表第 ${pn} 页`,
         params: {
           vmid,
           pn,
@@ -1215,6 +1280,87 @@
     };
   }
 
+  async function fetchLatestDynamic(account, mixinKey, label = "动态检查") {
+    const query = wbiSign(
+      {
+        offset: "",
+        host_mid: account.mid,
+        timezone_offset: new Date().getTimezoneOffset(),
+        platform: "web",
+        features: DYNAMIC_FEED_FEATURES,
+        web_location: "333.1387",
+      },
+      mixinKey
+    );
+
+    const payload = await apiFetch(`/x/polymer/web-dynamic/v1/feed/space?${query}`, {
+      label,
+      referrer: `https://space.bilibili.com/${account.mid}/dynamic`,
+      timeoutMs: 20000,
+    });
+    if (Number(payload?.code) !== 0) {
+      if (isBannedAccountPayload(payload)) {
+        return {
+          status: "banned",
+          latestDynamicPubdate: 0,
+          latestDynamicTitle: "",
+          message: payload?.message || payload?.msg || "账号封禁或异常",
+        };
+      }
+      return {
+        status: "unknown",
+        code: payload?.code,
+        message: payload?.message || payload?.msg || "",
+      };
+    }
+
+    const items = Array.isArray(payload.data?.items)
+      ? payload.data.items.filter((item) => item?.visible !== false)
+      : [];
+    if (items.length === 0) {
+      return {
+        status: "never-dynamic",
+        latestDynamicPubdate: 0,
+        latestDynamicTitle: "",
+      };
+    }
+
+    let latest = null;
+    let latestDynamicPubdate = 0;
+    for (const item of items) {
+      const pubdate = dynamicCreatedSeconds(item);
+      if (pubdate > latestDynamicPubdate) {
+        latest = item;
+        latestDynamicPubdate = pubdate;
+      }
+    }
+
+    if (!latestDynamicPubdate) {
+      return {
+        status: "unknown",
+        code: "missing-dynamic-pubdate",
+        message: "动态时间字段缺失",
+      };
+    }
+
+    return {
+      status: "ok",
+      latestDynamicPubdate,
+      latestDynamicTitle: dynamicTitle(latest),
+    };
+  }
+
+  function isVideoInactive(latest, cutoff) {
+    if (latest.status === "ok") return latest.latestPubdate < cutoff;
+    if (latest.status === "never-posted") return state.settings.includeNeverPosted;
+    return false;
+  }
+
+  function isDynamicInactive(latest, cutoff) {
+    if (latest.status === "ok") return latest.latestDynamicPubdate < cutoff;
+    return latest.status === "never-dynamic";
+  }
+
   async function scanInactiveUps() {
     if (state.isScanning || state.isUnfollowing) return;
     if (!isFollowPage()) {
@@ -1239,13 +1385,15 @@
     let unknown = 0;
     let activeRecent = 0;
     let inactiveByDate = 0;
+    let dynamicChecked = 0;
+    let includedNeverDynamic = 0;
     let includedNeverPosted = 0;
     let skippedNeverPosted = 0;
     let includedBanned = 0;
 
     try {
       const nav = await getNavForWbi();
-      addLog(`开始扫描近期未投稿账号：${state.settings.inactiveMonths} 个月未投稿，包含从未投稿账号。`, "info");
+      addLog(`开始按 UP 主活跃度扫描：${state.settings.inactiveMonths} 个月未投稿且未发动态，包含从未投稿账号。`, "info");
       if (nav.mid && vmid && nav.mid !== vmid) {
         addLog("当前页面账号与登录账号不一致，已改用登录账号关注列表。", "warn");
       }
@@ -1266,7 +1414,7 @@
         if (state.stopRequested) break;
 
         const account = accounts[index];
-        state.progress = `检查投稿 ${index + 1}/${accounts.length}`;
+        state.progress = `检查活跃度 ${index + 1}/${accounts.length}`;
         renderStatus();
 
         const latest = await fetchLatestVideo(
@@ -1274,33 +1422,8 @@
           nav.mixinKey,
           `投稿检查第 ${index + 1}/${accounts.length}`
         );
-        if (latest.status === "ok" && latest.latestPubdate < cutoff) {
-          inactiveByDate += 1;
-          const candidate = buildInactiveCandidate(account, {
-            ...latest,
-            reason: "inactive",
-          });
-          const existed = state.candidates.has(candidate.key);
-          state.candidates.set(candidate.key, candidate);
-          if (!existed) matched += 1;
-        } else if (latest.status === "never-posted") {
-          if (state.settings.includeNeverPosted) {
-            const candidate = buildInactiveCandidate(account, {
-              ...latest,
-              reason: "never-posted",
-            });
-            const existed = state.candidates.has(candidate.key);
-            state.candidates.set(candidate.key, candidate);
-            if (!existed) {
-              matched += 1;
-              includedNeverPosted += 1;
-            }
-          } else {
-            skippedNeverPosted += 1;
-          }
-        } else if (latest.status === "ok") {
-          activeRecent += 1;
-        } else if (latest.status === "banned") {
+
+        if (latest.status === "banned") {
           if (state.settings.includeBannedAccount) {
             const candidate = buildInactiveCandidate(account, {
               ...latest,
@@ -1317,12 +1440,58 @@
           }
         } else if (latest.status === "unknown") {
           unknown += 1;
+        } else if (latest.status === "never-posted" && !state.settings.includeNeverPosted) {
+          skippedNeverPosted += 1;
+        } else if (!isVideoInactive(latest, cutoff)) {
+          activeRecent += 1;
+        } else {
+          const dynamic = await fetchLatestDynamic(
+            account,
+            nav.mixinKey,
+            `动态检查第 ${index + 1}/${accounts.length}`
+          );
+          dynamicChecked += 1;
+
+          if (dynamic.status === "banned") {
+            if (state.settings.includeBannedAccount) {
+              const candidate = buildInactiveCandidate(account, {
+                ...latest,
+                ...dynamic,
+                reason: "banned",
+              });
+              const existed = state.candidates.has(candidate.key);
+              state.candidates.set(candidate.key, candidate);
+              if (!existed) {
+                matched += 1;
+                includedBanned += 1;
+              }
+            } else {
+              unknown += 1;
+            }
+          } else if (dynamic.status === "unknown") {
+            unknown += 1;
+          } else if (isDynamicInactive(dynamic, cutoff)) {
+            inactiveByDate += 1;
+            if (latest.status === "never-posted") includedNeverPosted += 1;
+            if (dynamic.status === "never-dynamic") includedNeverDynamic += 1;
+
+            const candidate = buildInactiveCandidate(account, {
+              ...latest,
+              ...dynamic,
+              reason: "inactive",
+            });
+            const existed = state.candidates.has(candidate.key);
+            state.candidates.set(candidate.key, candidate);
+            if (!existed) matched += 1;
+          } else {
+            activeRecent += 1;
+          }
         }
 
         if ((index + 1) % 10 === 0 || index === accounts.length - 1) {
           renderCandidateList();
           addLog(
-            `投稿检查 ${index + 1}/${accounts.length}：候选 ${state.candidates.size} 个，近期未投 ${inactiveByDate} 个，半年内有投稿 ${activeRecent} 个。`,
+            `活跃度检查 ${index + 1}/${accounts.length}：候选 ${state.candidates.size} 个，双条件未活跃 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，已查动态 ${dynamicChecked} 个。`,
             "info"
           );
         }
@@ -1334,11 +1503,11 @@
 
       renderCandidateList();
       addLog(
-        `近期未投稿扫描结束：新增 ${matched} 个，超过期限未投稿 ${inactiveByDate} 个，半年内有投稿 ${activeRecent} 个，从未投稿纳入 ${includedNeverPosted} 个，封禁纳入 ${includedBanned} 个，跳过从未投稿 ${skippedNeverPosted} 个，未知 ${unknown} 个。`,
+        `活跃度扫描结束：新增 ${matched} 个，同时超过期限未投稿/未发动态 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，从未投稿纳入 ${includedNeverPosted} 个，从未发动态纳入 ${includedNeverDynamic} 个，封禁纳入 ${includedBanned} 个，跳过从未投稿 ${skippedNeverPosted} 个，未知 ${unknown} 个。`,
         "info"
       );
     } catch (error) {
-      addLog(error?.message || "近期未投稿扫描失败。", "warn");
+      addLog(error?.message || "活跃度扫描失败。", "warn");
     } finally {
       state.isScanning = false;
       state.progress = "";
@@ -2008,7 +2177,7 @@
     });
 
     const inactiveCard = createFeatureCard({
-      title: "近期未投稿取关",
+      title: "按up主活跃度取关",
       summary: summarizeInactiveSettings(),
       settingsOpen: state.inactiveSettingsOpen,
       onToggle: () => {
@@ -2016,7 +2185,7 @@
         renderApp();
       },
       settingsNodes: [
-        createInput("未投稿月数", draft.inactiveMonths, {
+        createInput("未投稿/未发动态月数", draft.inactiveMonths, {
           type: "number",
           min: "1",
           max: "36",
@@ -2092,7 +2261,7 @@
 
     const busy = state.isScanning || state.isUnfollowing;
     const selfCheck = createButton("接口自检", "ghost", apiSelfCheck);
-    const scanInactive = createButton("近期未投扫描", "", scanInactiveUps);
+    const scanInactive = createButton("活跃度扫描", "", scanInactiveUps);
     const scanApi = createButton("接口扫描", "", scanByApi);
     const scanCurrent = createButton("页面扫描", "ghost", () => {
       resetCandidatesForScan("name");
@@ -2226,7 +2395,7 @@
       meta.className = "buh-row-meta";
       const sourceText =
         candidate.source === "inactive-up"
-          ? "近期未投"
+          ? "活跃度"
           : candidate.source === "api"
             ? "接口"
             : "页面";
@@ -2240,9 +2409,11 @@
         const detail = document.createElement("div");
         detail.className = "buh-row-detail";
         detail.textContent = candidate.details.join(" · ");
-        if (candidate.latestTitle) {
-          detail.title = `最近投稿：${candidate.latestTitle}`;
-        }
+        const detailTitle = [
+          candidate.latestTitle ? `最近投稿：${candidate.latestTitle}` : "",
+          candidate.latestDynamicTitle ? `最近动态：${candidate.latestDynamicTitle}` : "",
+        ].filter(Boolean);
+        if (detailTitle.length) detail.title = detailTitle.join("\n");
         main.append(detail);
       }
 
