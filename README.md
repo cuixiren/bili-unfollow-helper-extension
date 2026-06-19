@@ -4,13 +4,22 @@
 
 ![接口扫描示例](docs/images/api-scan.png)
 
+## 仓库结构
+
+    bili-unfollow-helper-extension/
+    |- extension/       # 浏览器实际加载的扩展代码
+    |- docs/images/     # README 使用的截图，不需要打进扩展包
+    `- README.md        # 安装和使用说明
+
+安装或打包扩展时，只使用 extension/ 目录。根目录里的 README 和 docs/images/ 截图只是说明文档资源，不参与扩展运行。
+
 ## 功能
 
 ### 按账号名称取关
 
 - 通过关注列表接口分页读取关注账号。
-- 使用账号名称模糊匹配，匹配方式类似 `%名称%`。
-- 默认匹配名称：`账号已注销`。
+- 使用账号名称模糊匹配，匹配方式类似 %名称%。
+- 默认匹配名称：账号已注销。
 - 支持接口扫描、页面扫描、滚动扫描。
 - 候选列表显示账号名称、打码 UID 和头像。
 
@@ -20,42 +29,53 @@
 - 默认规则：
   - 从未投稿，列入候选。
   - 或最新投稿早于设置的未投稿月数，列入候选。
-- 默认未投稿月数：`6`。
-- 默认检查账号上限：`5000`。
+- 默认未投稿月数：6。
+- 默认检查账号上限：5000。
 - 可选择是否包含封禁或账号异常账号。
 - 候选列表显示最近投稿日期、视频数和原因。
 
 ## 安装
 
 1. 下载或克隆本项目到本地。
-2. 打开 Chrome 扩展管理页：
+2. 如果是从 GitHub 下载的 ZIP，先解压到本地文件夹。
+3. 打开 Chrome 扩展管理页：
 
-   ```text
-   chrome://extensions/
-   ```
+       chrome://extensions/
 
    Edge 用户打开：
 
-   ```text
-   edge://extensions/
-   ```
+       edge://extensions/
 
-3. 打开“开发者模式”。
-4. 点击“加载已解压的扩展程序”。
-5. 选择本项目目录：
+4. 打开“开发者模式”。
+5. 点击“加载已解压的扩展程序”。
+6. 选择项目下的扩展代码目录：
 
-   ```text
-   bili-unfollow-helper-extension
-   ```
+       bili-unfollow-helper-extension/extension
+
+不要选择仓库根目录 bili-unfollow-helper-extension，否则浏览器会把 README 和文档截图也放在同一个扩展目录里。
+
+## 打包发布
+
+如果要上传到 Chrome Web Store、Edge Add-ons 或手动打包，只打包 extension/ 目录里的内容，并确保压缩包根层级直接包含 manifest.json。
+
+推荐压缩包结构：
+
+    bili-unfollow-helper-extension.zip
+    |- manifest.json
+    |- background.js
+    |- content.css
+    |- content.js
+    |- page-bridge.js
+    `- wbi.js
+
+不要把 README.md、docs/ 或截图文件放进扩展发布包。
 
 ## 使用前准备
 
 1. 登录 B 站网页版。
 2. 打开自己的关注列表页：
 
-   ```text
-   https://space.bilibili.com/<你的 UID>/relation/follow?tagid=-1
-   ```
+       https://space.bilibili.com/<你的 UID>/relation/follow?tagid=-1
 
 3. 页面右侧出现“关注清理助手”面板后再开始扫描。
 4. 建议先点击“接口自检”，确认当前登录态和接口访问正常。
@@ -94,7 +114,7 @@
 - “停止”：当前动作完成后停止后续处理。
 - “清空”：清空当前候选列表，不会执行取关。
 
-如果 B 站返回 `HTTP 412` 或 `code: -352`，通常是触发了风控。可以先暂停操作，在网页上手动点一次取关，并按提示完成验证后再重试。
+如果 B 站返回 HTTP 412 或 code: -352，通常是触发了风控。可以先暂停操作，在网页上手动点一次取关，并按提示完成验证后再重试。
 
 ## 设置说明
 
@@ -116,32 +136,33 @@
 
 - 本扩展是本地浏览器扩展，不包含服务器端组件。
 - 项目文件不包含个人 Cookie、CSRF、账号配置或完整请求头。
-- `manifest.json` 不能控制“公开给所有用户”的发布范围；公开范围需要在 GitHub 仓库、Chrome Web Store 或 Edge Add-ons 等发布平台里设置。
-- 如果作为公开仓库分享给其他用户，其他用户只需要下载项目并按“安装”步骤加载扩展即可。
+- manifest.json 位于 extension/ 目录；公开范围由 GitHub、Chrome Web Store 或 Edge Add-ons 等发布平台控制。
+- 如果作为公开仓库分享给其他用户，其他用户只需要下载项目，并按“安装”步骤加载 extension/ 目录即可。
 
 ## 注意事项
 
 - 本扩展只在本地浏览器运行。
 - 面板只显示打码 UID，不输出完整账号 ID。
 - 不要把 Cookie、CSRF、完整请求头发给任何人。
-- B 站接口可能触发风控，例如返回 `HTTP 412` 或 `code: -352`。
-- 如果返回 `code: -352`，通常需要你在 B 站页面手动点一次取关，并按提示完成手机号验证。
+- B 站接口可能触发风控，例如返回 HTTP 412 或 code: -352。
+- 如果返回 code: -352，通常需要你在 B 站页面手动点一次取关，并按提示完成手机号验证。
 - 近期未投稿扫描会产生较多只读请求，关注很多时建议适当调低检查账号上限。
 
 ## 权限
 
-- 注入页面：`https://space.bilibili.com/*`
-- 请求接口：`https://api.bilibili.com/*`
+- 注入页面：https://space.bilibili.com/*
+- 请求接口：https://api.bilibili.com/*
 - 不申请读取浏览历史、剪贴板、标签页等权限。
 
 ## 文件说明
 
-- `manifest.json`：扩展清单。
-- `content.js`：页面面板、扫描和取关逻辑。
-- `content.css`：面板样式。
-- `page-bridge.js`：页面上下文接口请求桥接。
-- `background.js`：扩展后台请求兜底。
-- `wbi.js`：B 站 WBI 签名工具。
+- extension/manifest.json：扩展清单。
+- extension/content.js：页面面板、扫描和取关逻辑。
+- extension/content.css：面板样式。
+- extension/page-bridge.js：页面上下文接口请求桥接。
+- extension/background.js：扩展后台请求兜底。
+- extension/wbi.js：B 站 WBI 签名工具。
+- docs/images/：README 使用的截图。
 
 ## 免责声明
 
