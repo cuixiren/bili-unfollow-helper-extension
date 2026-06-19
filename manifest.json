@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Bilibili 关注清理助手",
+  "version": "0.3.28",
+  "description": "在哔哩哔哩关注页列出符合条件的账号，支持账号已注销和近期未投稿账号扫描。",
+  "host_permissions": ["https://api.bilibili.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["page-bridge.js"],
+      "matches": ["https://space.bilibili.com/*", "https://www.bilibili.com/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://space.bilibili.com/*"],
+      "js": ["wbi.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
