@@ -5,6 +5,9 @@
   const STORAGE_KEY = "biliUnfollowHelperSettings";
   const PAGE_API_CHANNEL = "buh-page-api-v1";
   const SETTINGS_VERSION = 15;
+  const MAX_UNFOLLOW_ACTIONS = 5000;
+  const INACTIVE_CHECK_API_DELAY_MS = 1000;
+  const UNFOLLOW_ACTION_INTERVAL_MS = 1000;
   const DYNAMIC_FEED_FEATURES = [
     "itemOpusStyle",
     "listOnlyfans",
@@ -27,27 +30,20 @@
   const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
     targetName: "账号已注销",
+    nameCheckLimit: 1500,
     maxActions: 24,
     apiPageSize: 50,
     apiMaxPages: 30,
-    apiPageDelayMinMs: 1200,
-    apiPageDelayMaxMs: 3000,
-    apiDelayMinMs: 1000,
-    apiDelayMaxMs: 1000,
-    apiBatchSize: 0,
-    apiBatchPauseMinMs: 0,
-    apiBatchPauseMaxMs: 0,
     inactiveMonths: 6,
     inactiveCheckLimit: 5000,
     inactiveMaxActions: 24,
-    inactiveDelayMinMs: 1000,
-    inactiveDelayMaxMs: 1000,
     includeNeverPosted: true,
-    includeBannedAccount: false,
-    videoCheckDelayMs: 1200,
+    nameIncludeBannedAccount: false,
+    inactiveIncludeBannedAccount: false,
+    nameIncludeMutualFriends: false,
+    inactiveIncludeMutualFriends: false,
     scanRounds: 60,
     scrollDelayMs: 1200,
-    actionDelayMs: 2200,
     afterClickDelayMs: 800,
     panelLeft: null,
     panelTop: null,
@@ -63,6 +59,7 @@
     isScanning: false,
     isUnfollowing: false,
     stopRequested: false,
+    isPaused: false,
     progress: "",
     logs: [],
     collapsed: false,
@@ -97,23 +94,9 @@
       const settings = { ...DEFAULT_SETTINGS, ...saved };
       if (saved.settingsVersion !== SETTINGS_VERSION) {
         const oldMaxActions = Number(saved.maxActions);
-        const mergedDelayMs = clampNumber(
-          saved.apiDelayMaxMs || saved.apiDelayMinMs,
-          DEFAULT_SETTINGS.apiDelayMinMs,
-          1000,
-          120000
-        );
         settings.settingsVersion = SETTINGS_VERSION;
         if (!Number.isFinite(oldMaxActions) || oldMaxActions === 20) {
           settings.maxActions = DEFAULT_SETTINGS.maxActions;
-        }
-        settings.apiDelayMinMs = mergedDelayMs;
-        settings.apiDelayMaxMs = mergedDelayMs;
-        settings.apiBatchSize = DEFAULT_SETTINGS.apiBatchSize;
-        settings.apiBatchPauseMinMs = DEFAULT_SETTINGS.apiBatchPauseMinMs;
-        settings.apiBatchPauseMaxMs = DEFAULT_SETTINGS.apiBatchPauseMaxMs;
-        if (Number(saved.videoCheckDelayMs) <= 500) {
-          settings.videoCheckDelayMs = DEFAULT_SETTINGS.videoCheckDelayMs;
         }
         if (!Number.isFinite(Number(saved.inactiveCheckLimit))) {
           settings.inactiveCheckLimit = DEFAULT_SETTINGS.inactiveCheckLimit;
@@ -124,17 +107,25 @@
         if (!Number.isFinite(Number(saved.inactiveMaxActions))) {
           settings.inactiveMaxActions = DEFAULT_SETTINGS.inactiveMaxActions;
         }
-        if (!Number.isFinite(Number(saved.inactiveDelayMinMs))) {
-          settings.inactiveDelayMinMs = settings.apiDelayMinMs;
-          settings.inactiveDelayMaxMs = settings.apiDelayMaxMs;
-        }
         settings.includeNeverPosted = DEFAULT_SETTINGS.includeNeverPosted;
-        settings.includeBannedAccount = Boolean(saved.includeBannedAccount);
         if (!saved.panelMoved) {
           settings.panelLeft = DEFAULT_SETTINGS.panelLeft;
           settings.panelTop = DEFAULT_SETTINGS.panelTop;
           settings.panelMoved = false;
         }
+      }
+      if (!("inactiveIncludeBannedAccount" in saved)) {
+        settings.inactiveIncludeBannedAccount = Boolean(saved.includeBannedAccount);
+      }
+      if (!("nameIncludeBannedAccount" in saved)) {
+        settings.nameIncludeBannedAccount = DEFAULT_SETTINGS.nameIncludeBannedAccount;
+      }
+      if (!("nameIncludeMutualFriends" in saved)) {
+        settings.nameIncludeMutualFriends = DEFAULT_SETTINGS.nameIncludeMutualFriends;
+      }
+      if (!("inactiveIncludeMutualFriends" in saved)) {
+        settings.inactiveIncludeMutualFriends =
+          DEFAULT_SETTINGS.inactiveIncludeMutualFriends;
       }
       return settings;
     } catch {
@@ -151,13 +142,15 @@
     if (!state.settingsDraft) {
       state.settingsDraft = {
         targetName: state.settings.targetName,
+        nameCheckLimit: state.settings.nameCheckLimit,
         maxActions: state.settings.maxActions,
+        nameIncludeBannedAccount: state.settings.nameIncludeBannedAccount,
+        nameIncludeMutualFriends: state.settings.nameIncludeMutualFriends,
         inactiveMonths: state.settings.inactiveMonths,
         inactiveCheckLimit: state.settings.inactiveCheckLimit,
         inactiveMaxActions: state.settings.inactiveMaxActions,
-        includeBannedAccount: state.settings.includeBannedAccount,
-        nameDelaySeconds: Math.round(apiDelayRange("name").max / 1000),
-        inactiveDelaySeconds: Math.round(apiDelayRange("inactive").max / 1000),
+        inactiveIncludeBannedAccount: state.settings.inactiveIncludeBannedAccount,
+        inactiveIncludeMutualFriends: state.settings.inactiveIncludeMutualFriends,
       };
     }
     return state.settingsDraft;
@@ -166,26 +159,19 @@
   function saveSettingsDraft() {
     try {
       const draft = currentSettingsDraft();
-      const nameIntervalSeconds = clampNumber(
-        draft.nameDelaySeconds,
-        DEFAULT_SETTINGS.apiDelayMinMs / 1000,
-        1,
-        120
-      );
-      const inactiveIntervalSeconds = clampNumber(
-        draft.inactiveDelaySeconds,
-        DEFAULT_SETTINGS.inactiveDelayMinMs / 1000,
-        1,
-        120
-      );
-
       state.settings.targetName =
         normalizeText(draft.targetName) || DEFAULT_SETTINGS.targetName;
+      state.settings.nameCheckLimit = clampNumber(
+        draft.nameCheckLimit,
+        DEFAULT_SETTINGS.nameCheckLimit,
+        20,
+        5000
+      );
       state.settings.maxActions = clampNumber(
         draft.maxActions,
         DEFAULT_SETTINGS.maxActions,
         1,
-        200
+        MAX_UNFOLLOW_ACTIONS
       );
       state.settings.inactiveMonths = clampNumber(
         draft.inactiveMonths,
@@ -203,21 +189,27 @@
         draft.inactiveMaxActions,
         DEFAULT_SETTINGS.inactiveMaxActions,
         1,
-        200
+        MAX_UNFOLLOW_ACTIONS
       );
-      state.settings.includeBannedAccount = Boolean(draft.includeBannedAccount);
-      state.settings.apiDelayMinMs = nameIntervalSeconds * 1000;
-      state.settings.apiDelayMaxMs = nameIntervalSeconds * 1000;
-      state.settings.inactiveDelayMinMs = inactiveIntervalSeconds * 1000;
-      state.settings.inactiveDelayMaxMs = inactiveIntervalSeconds * 1000;
+      state.settings.nameIncludeBannedAccount = Boolean(
+        draft.nameIncludeBannedAccount
+      );
+      state.settings.nameIncludeMutualFriends = Boolean(
+        draft.nameIncludeMutualFriends
+      );
+      state.settings.inactiveIncludeBannedAccount = Boolean(
+        draft.inactiveIncludeBannedAccount
+      );
+      state.settings.inactiveIncludeMutualFriends = Boolean(
+        draft.inactiveIncludeMutualFriends
+      );
       state.settingsDraft = null;
       saveSettings();
       state.nameSettingsOpen = false;
       state.inactiveSettingsOpen = false;
-      state.candidates.clear();
       showToast("保存设置成功", "success");
       renderApp();
-      addLog("保存设置成功。", "info");
+      addLog("保存设置成功，当前候选列表已保留。", "info");
     } catch (error) {
       showToast("保存设置失败", "warn");
       addLog(`保存设置失败：${error?.message || "未知错误"}`, "warn");
@@ -443,45 +435,45 @@
 
   async function sleepInterruptibly(ms) {
     const deadline = Date.now() + ms;
-    while (!state.stopRequested && Date.now() < deadline) {
-      await sleep(Math.min(1000, Math.max(0, deadline - Date.now())));
+    while (!state.stopRequested) {
+      if (state.isPaused) {
+        await waitWhilePaused();
+        continue;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(1000, remaining));
     }
   }
 
-  function apiDelayRange(mode = "name") {
-    const minKey = mode === "inactive" ? "inactiveDelayMinMs" : "apiDelayMinMs";
-    const maxKey = mode === "inactive" ? "inactiveDelayMaxMs" : "apiDelayMaxMs";
-    const defaultMinKey = mode === "inactive" ? "inactiveDelayMinMs" : "apiDelayMinMs";
-    const defaultMaxKey = mode === "inactive" ? "inactiveDelayMaxMs" : "apiDelayMaxMs";
-    const min = clampNumber(
-      state.settings[minKey],
-      DEFAULT_SETTINGS[defaultMinKey],
-      1000,
-      60000
-    );
-    const max = clampNumber(
-      state.settings[maxKey],
-      DEFAULT_SETTINGS[defaultMaxKey],
-      min,
-      120000
-    );
-    return { min, max };
-  }
-
-  function delayText(mode = "name") {
-    const delay = apiDelayRange(mode);
-    return delay.min === delay.max
-      ? `${Math.round(delay.min / 1000)} 秒`
-      : `${Math.round(delay.min / 1000)}-${Math.round(delay.max / 1000)} 秒`;
+  async function waitWhilePaused() {
+    while (!state.stopRequested && state.isPaused) {
+      await sleep(300);
+    }
   }
 
   function summarizeNameSettings() {
-    return `账号名称包含“${state.settings.targetName}”，上限 ${state.settings.maxActions}，间隔 ${delayText("name")}`;
+    const bannedText = state.settings.nameIncludeBannedAccount
+      ? "含封禁"
+      : "不含封禁";
+    const mutualText = state.settings.nameIncludeMutualFriends
+      ? "含互关"
+      : "不含互关";
+    return `账号名称包含“${state.settings.targetName}”，检查 ${state.settings.nameCheckLimit} 个，${bannedText}，${mutualText}，上限 ${state.settings.maxActions}，取关间隔 ${UNFOLLOW_ACTION_INTERVAL_MS / 1000} 秒`;
+  }
+
+  function inactiveCheckIntervalText() {
+    return `${INACTIVE_CHECK_API_DELAY_MS / 1000} 秒`;
   }
 
   function summarizeInactiveSettings() {
-    const bannedText = state.settings.includeBannedAccount ? "含封禁" : "不含封禁";
-    return `未投稿/未发动态 ${state.settings.inactiveMonths} 个月，检查 ${state.settings.inactiveCheckLimit} 个，${bannedText}，上限 ${state.settings.inactiveMaxActions}，间隔 ${delayText("inactive")}`;
+    const bannedText = state.settings.inactiveIncludeBannedAccount
+      ? "含封禁"
+      : "不含封禁";
+    const mutualText = state.settings.inactiveIncludeMutualFriends
+      ? "含互关"
+      : "不含互关";
+    return `未投稿/未发动态 ${state.settings.inactiveMonths} 个月，检查 ${state.settings.inactiveCheckLimit} 个，${bannedText}，${mutualText}，上限 ${state.settings.inactiveMaxActions}，检查间隔 ${inactiveCheckIntervalText()}，取关间隔 ${UNFOLLOW_ACTION_INTERVAL_MS / 1000} 秒`;
   }
 
   function candidateModeFromSource(source) {
@@ -786,6 +778,69 @@
     );
   }
 
+  function isBannedAccountText(value) {
+    return /封禁|封鎖|被封|账号异常|账号不存在|用户不存在|空间隐私|访问权限|非法用户/.test(
+      normalizeText(value)
+    );
+  }
+
+  function isBannedAccountLike(account) {
+    const values = [
+      account?.uname,
+      account?.name,
+      account?.sign,
+      account?.message,
+      account?.msg,
+      account?.reason,
+      account?.desc,
+    ];
+    return values.some(isBannedAccountText);
+  }
+
+  function isTruthyRelationFlag(value) {
+    return value === true || value === 1 || value === "1" || value === "true";
+  }
+
+  function isMutualFriendAccount(account) {
+    const booleanFlags = [
+      account?.is_friend,
+      account?.isFriend,
+      account?.is_mutual_follow,
+      account?.isMutualFollow,
+      account?.mutual_follow,
+      account?.mutualFollow,
+      account?.mutual,
+      account?.friend,
+      account?.relation?.is_friend,
+      account?.relation?.isFriend,
+      account?.relation?.mutual,
+    ];
+    if (booleanFlags.some(isTruthyRelationFlag)) return true;
+
+    const attributes = [
+      account?.attribute,
+      account?.relation,
+      account?.relation?.attribute,
+      account?.relation_attribute,
+      account?.relationAttribute,
+    ];
+    if (attributes.some((value) => Number(value) === 6)) return true;
+
+    const text = [
+      account?.relation_text,
+      account?.relationText,
+      account?.relationship,
+      account?.desc,
+    ]
+      .map(normalizeText)
+      .join(" ");
+    return /互相关注|互粉|互关/.test(text);
+  }
+
+  function isMutualFriendElement(element) {
+    return /互相关注|互粉|互关/.test(elementText(element));
+  }
+
   function wbiSign(params, mixinKey) {
     if (!window.__biliWbi?.sign) {
       throw new Error("WBI 签名工具未加载，请重新加载扩展");
@@ -833,7 +888,16 @@
         ];
 
     const lines = values.flatMap(splitVisibleLines);
-    return lines.some((line) => line.includes(targetName));
+    if (lines.some((line) => line.includes(targetName))) return true;
+
+    if (!state.settings.nameIncludeBannedAccount) return false;
+    const cardLines = [
+      card?.getAttribute?.("title"),
+      card?.getAttribute?.("aria-label"),
+      card?.innerText,
+      card?.textContent,
+    ].flatMap(splitVisibleLines);
+    return [...lines, ...cardLines].some(isBannedAccountText);
   }
 
   function extractCandidateName(link, card) {
@@ -858,6 +922,7 @@
     });
     return (
       lines.find((line) => targetName && line.includes(targetName)) ||
+      lines.find((line) => state.settings.nameIncludeBannedAccount && isBannedAccountText(line)) ||
       lines.find(Boolean) ||
       targetName ||
       "(未命名)"
@@ -925,12 +990,16 @@
       source: existing ? existing.source : "page",
       selected: existing ? existing.selected : true,
       status: existing ? existing.status : "pending",
-      note: existing ? existing.note : "",
+      note: existing
+        ? existing.note
+        : isBannedAccountText(elementText(card))
+          ? "疑似封禁或账号异常"
+          : "",
       lastSeenAt: Date.now(),
     };
   }
 
-  function buildApiCandidate(account) {
+  function buildApiCandidate(account, options = {}) {
     const mid = String(account?.mid || "");
     const key = `mid:${mid}`;
     const existing = state.candidates.get(key);
@@ -946,7 +1015,7 @@
       source: "api",
       selected: existing ? existing.selected : true,
       status: existing ? existing.status : "pending",
-      note: existing ? existing.note : "",
+      note: existing ? existing.note : normalizeText(options.note || ""),
       lastSeenAt: Date.now(),
     };
   }
@@ -987,6 +1056,7 @@
       latestDynamicDate,
       latestDynamicTitle: normalizeText(latestInfo.latestDynamicTitle || ""),
       totalVideos: Number(latestInfo.totalVideos || 0),
+      detailsExpanded: existing ? Boolean(existing.detailsExpanded) : false,
       details: [
         `最近投稿：${latestDate}`,
         `最近动态：${latestDynamicDate}`,
@@ -1010,6 +1080,9 @@
       const card = findReasonableCard(link);
       if (!card || seenCards.has(card)) continue;
       if (!hasTargetNameNear(link, card)) continue;
+      if (!state.settings.nameIncludeMutualFriends && isMutualFriendElement(card)) {
+        continue;
+      }
 
       seenCards.add(card);
       const candidate = buildCandidate(link, card);
@@ -1039,6 +1112,7 @@
     resetCandidatesForScan("name");
     state.isScanning = true;
     state.stopRequested = false;
+    state.isPaused = false;
     renderControls();
 
     const targetName = normalizeText(state.settings.targetName);
@@ -1048,19 +1122,24 @@
       20,
       50
     );
-    const maxPages = clampNumber(
-      state.settings.apiMaxPages,
-      DEFAULT_SETTINGS.apiMaxPages,
-      1,
-      200
+    const checkLimit = clampNumber(
+      state.settings.nameCheckLimit,
+      DEFAULT_SETTINGS.nameCheckLimit,
+      20,
+      5000
     );
+    const maxPages = Math.ceil(checkLimit / pageSize);
 
     let addedTotal = 0;
     let scannedTotal = 0;
-    addLog("开始接口扫描，按分页慢速读取关注列表。", "info");
+    let includedBanned = 0;
+    let skippedMutual = 0;
+    addLog(`开始接口扫描，最多检查 ${checkLimit} 个关注账号。`, "info");
 
     try {
       for (let pn = 1; pn <= maxPages; pn += 1) {
+        if (state.stopRequested) break;
+        await waitWhilePaused();
         if (state.stopRequested) break;
 
         const payload = await apiFetch("/x/relation/followings", {
@@ -1077,18 +1156,35 @@
         assertApiOk(payload, "读取关注列表失败");
         const data = payload.data || {};
         const list = Array.isArray(data.list) ? data.list : [];
-        scannedTotal += list.length;
+        const remaining = Math.max(0, checkLimit - scannedTotal);
+        const accounts = list.slice(0, remaining);
+        scannedTotal += accounts.length;
 
         let addedThisPage = 0;
-        for (const account of list) {
-          if (!normalizeText(account?.uname).includes(targetName)) continue;
-          const candidate = buildApiCandidate(account);
+        for (const account of accounts) {
+          if (
+            !state.settings.nameIncludeMutualFriends &&
+            isMutualFriendAccount(account)
+          ) {
+            skippedMutual += 1;
+            continue;
+          }
+
+          const matchesName = normalizeText(account?.uname).includes(targetName);
+          const matchesBanned =
+            state.settings.nameIncludeBannedAccount && isBannedAccountLike(account);
+          if (!matchesName && !matchesBanned) continue;
+
+          const candidate = buildApiCandidate(account, {
+            note: matchesBanned && !matchesName ? "疑似封禁或账号异常" : "",
+          });
           if (!candidate.mid) continue;
           const existed = state.candidates.has(candidate.key);
           state.candidates.set(candidate.key, candidate);
           if (!existed) {
             addedThisPage += 1;
             addedTotal += 1;
+            if (matchesBanned) includedBanned += 1;
           }
         }
 
@@ -1097,20 +1193,19 @@
         addLog(`接口扫描第 ${pn} 页：新增 ${addedThisPage} 个。`, "info");
 
         const total = Number(data.total || 0);
+        if (scannedTotal >= checkLimit) break;
         if (list.length < pageSize || (total > 0 && pn * pageSize >= total)) break;
-
-        const waitMs = randomInt(
-          DEFAULT_SETTINGS.apiPageDelayMinMs,
-          DEFAULT_SETTINGS.apiPageDelayMaxMs
-        );
-        await sleepInterruptibly(waitMs);
       }
 
-      addLog(`接口扫描结束：扫过 ${scannedTotal} 个，新增 ${addedTotal} 个。`, "info");
+      addLog(
+        `接口扫描结束：扫过 ${scannedTotal} 个，新增 ${addedTotal} 个，封禁纳入 ${includedBanned} 个，互关好友跳过 ${skippedMutual} 个。`,
+        "info"
+      );
     } catch (error) {
       addLog(error?.message || "接口扫描失败。", "warn");
     } finally {
       state.isScanning = false;
+      state.isPaused = false;
       renderControls();
       renderStatus();
     }
@@ -1157,6 +1252,8 @@
 
     for (let pn = 1; pn <= maxPages; pn += 1) {
       if (state.stopRequested) break;
+      await waitWhilePaused();
+      if (state.stopRequested) break;
       state.progress = `读取关注列表第 ${pn} 页`;
       renderStatus();
 
@@ -1184,6 +1281,18 @@
           uname: normalizeText(item?.uname) || "(未命名)",
           name: normalizeText(item?.uname) || "(未命名)",
           face: normalizeText(item?.face || ""),
+          attribute: item?.attribute,
+          relation: item?.relation,
+          relation_text: item?.relation_text,
+          relationText: item?.relationText,
+          is_friend: item?.is_friend,
+          isFriend: item?.isFriend,
+          is_mutual_follow: item?.is_mutual_follow,
+          isMutualFollow: item?.isMutualFollow,
+          mutual_follow: item?.mutual_follow,
+          mutualFollow: item?.mutualFollow,
+          mutual: item?.mutual,
+          friend: item?.friend,
         });
         if (requestedLimit > 0 && accounts.length >= requestedLimit) break;
       }
@@ -1193,9 +1302,6 @@
       const total = Number(data.total || 0);
       if (requestedLimit > 0 && accounts.length >= requestedLimit) break;
       if (list.length < pageSize || (total > 0 && pn * pageSize >= total)) break;
-      await sleepInterruptibly(
-        randomInt(DEFAULT_SETTINGS.apiPageDelayMinMs, DEFAULT_SETTINGS.apiPageDelayMaxMs)
-      );
     }
 
     return accounts;
@@ -1376,6 +1482,7 @@
 
     state.isScanning = true;
     state.stopRequested = false;
+    state.isPaused = false;
     state.progress = "";
     resetCandidatesForScan("inactive");
     renderControls();
@@ -1390,6 +1497,7 @@
     let includedNeverPosted = 0;
     let skippedNeverPosted = 0;
     let includedBanned = 0;
+    let skippedMutual = 0;
 
     try {
       const nav = await getNavForWbi();
@@ -1412,10 +1520,30 @@
 
       for (let index = 0; index < accounts.length; index += 1) {
         if (state.stopRequested) break;
+        await waitWhilePaused();
+        if (state.stopRequested) break;
 
         const account = accounts[index];
         state.progress = `检查活跃度 ${index + 1}/${accounts.length}`;
         renderStatus();
+
+        if (
+          !state.settings.inactiveIncludeMutualFriends &&
+          isMutualFriendAccount(account)
+        ) {
+          skippedMutual += 1;
+          if ((index + 1) % 10 === 0 || index === accounts.length - 1) {
+            renderCandidateList();
+            addLog(
+              `活跃度检查 ${index + 1}/${accounts.length}：候选 ${state.candidates.size} 个，双条件未活跃 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，已查动态 ${dynamicChecked} 个，互关好友跳过 ${skippedMutual} 个。`,
+              "info"
+            );
+          }
+          if (index < accounts.length - 1) {
+            await sleepInterruptibly(INACTIVE_CHECK_API_DELAY_MS);
+          }
+          continue;
+        }
 
         const latest = await fetchLatestVideo(
           account,
@@ -1424,7 +1552,7 @@
         );
 
         if (latest.status === "banned") {
-          if (state.settings.includeBannedAccount) {
+          if (state.settings.inactiveIncludeBannedAccount) {
             const candidate = buildInactiveCandidate(account, {
               ...latest,
               reason: "banned",
@@ -1445,6 +1573,9 @@
         } else if (!isVideoInactive(latest, cutoff)) {
           activeRecent += 1;
         } else {
+          await sleepInterruptibly(INACTIVE_CHECK_API_DELAY_MS);
+          await waitWhilePaused();
+          if (state.stopRequested) break;
           const dynamic = await fetchLatestDynamic(
             account,
             nav.mixinKey,
@@ -1453,7 +1584,7 @@
           dynamicChecked += 1;
 
           if (dynamic.status === "banned") {
-            if (state.settings.includeBannedAccount) {
+            if (state.settings.inactiveIncludeBannedAccount) {
               const candidate = buildInactiveCandidate(account, {
                 ...latest,
                 ...dynamic,
@@ -1491,25 +1622,26 @@
         if ((index + 1) % 10 === 0 || index === accounts.length - 1) {
           renderCandidateList();
           addLog(
-            `活跃度检查 ${index + 1}/${accounts.length}：候选 ${state.candidates.size} 个，双条件未活跃 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，已查动态 ${dynamicChecked} 个。`,
+            `活跃度检查 ${index + 1}/${accounts.length}：候选 ${state.candidates.size} 个，双条件未活跃 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，已查动态 ${dynamicChecked} 个，互关好友跳过 ${skippedMutual} 个。`,
             "info"
           );
         }
 
         if (index < accounts.length - 1) {
-          await sleepInterruptibly(state.settings.videoCheckDelayMs);
+          await sleepInterruptibly(INACTIVE_CHECK_API_DELAY_MS);
         }
       }
 
       renderCandidateList();
       addLog(
-        `活跃度扫描结束：新增 ${matched} 个，同时超过期限未投稿/未发动态 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，从未投稿纳入 ${includedNeverPosted} 个，从未发动态纳入 ${includedNeverDynamic} 个，封禁纳入 ${includedBanned} 个，跳过从未投稿 ${skippedNeverPosted} 个，未知 ${unknown} 个。`,
+        `活跃度扫描结束：新增 ${matched} 个，同时超过期限未投稿/未发动态 ${inactiveByDate} 个，近期活跃 ${activeRecent} 个，从未投稿纳入 ${includedNeverPosted} 个，从未发动态纳入 ${includedNeverDynamic} 个，封禁纳入 ${includedBanned} 个，互关好友跳过 ${skippedMutual} 个，跳过从未投稿 ${skippedNeverPosted} 个，未知 ${unknown} 个。`,
         "info"
       );
     } catch (error) {
       addLog(error?.message || "活跃度扫描失败。", "warn");
     } finally {
       state.isScanning = false;
+      state.isPaused = false;
       state.progress = "";
       renderControls();
       renderStatus();
@@ -1521,6 +1653,7 @@
 
     state.isScanning = true;
     state.stopRequested = false;
+    state.isPaused = false;
     state.progress = "接口自检中";
     renderControls();
     renderStatus();
@@ -1539,6 +1672,8 @@
 
       const mid = String(nav.data?.mid || "");
       addLog(`页面上下文接口正常：${maskId(mid) || "已登录"}`, "info");
+      await waitWhilePaused();
+      if (state.stopRequested) return;
 
       const url = new URL("https://api.bilibili.com/x/relation/followings");
       url.searchParams.set("vmid", mid);
@@ -1557,6 +1692,7 @@
       addLog(error?.message || "接口自检失败。", "warn");
     } finally {
       state.isScanning = false;
+      state.isPaused = false;
       state.progress = "";
       renderControls();
       renderStatus();
@@ -1720,9 +1856,9 @@
     const confirmButton = findConfirmButton();
     if (confirmButton) {
       clickElement(confirmButton);
-      await sleep(state.settings.actionDelayMs);
+      await sleep(UNFOLLOW_ACTION_INTERVAL_MS);
     } else {
-      await sleep(state.settings.actionDelayMs);
+      await sleep(UNFOLLOW_ACTION_INTERVAL_MS);
     }
 
     candidate.status = "done";
@@ -1795,6 +1931,7 @@
     resetCandidatesForScan("name");
     state.isScanning = true;
     state.stopRequested = false;
+    state.isPaused = false;
     addLog("开始滚动扫描。", "info");
     renderControls();
 
@@ -1802,6 +1939,8 @@
     let lastScrollY = window.scrollY;
 
     for (let round = 1; round <= state.settings.scanRounds; round += 1) {
+      if (state.stopRequested) break;
+      await waitWhilePaused();
       if (state.stopRequested) break;
 
       const added = scanVisibleCandidates();
@@ -1811,7 +1950,7 @@
         top: Math.max(500, Math.round(window.innerHeight * 0.85)),
         behavior: "smooth",
       });
-      await sleep(state.settings.scrollDelayMs);
+      await sleepInterruptibly(state.settings.scrollDelayMs);
 
       const moved = Math.abs(window.scrollY - lastScrollY) >= 5;
       unchangedRounds = moved ? 0 : unchangedRounds + 1;
@@ -1827,6 +1966,7 @@
     }
 
     state.isScanning = false;
+    state.isPaused = false;
     renderControls();
     renderStatus();
     addLog("扫描结束。", "info");
@@ -1841,7 +1981,7 @@
       mode === "inactive" ? state.settings.inactiveMaxActions : state.settings.maxActions,
       mode === "inactive" ? DEFAULT_SETTINGS.inactiveMaxActions : DEFAULT_SETTINGS.maxActions,
       1,
-      200
+      MAX_UNFOLLOW_ACTIONS
     );
     const targets = selected.slice(0, maxActions);
 
@@ -1851,7 +1991,7 @@
     }
 
     const ok = window.confirm(
-      `将按当前页面 UI 取关 ${targets.length} 个账号。请确认列表无误后继续。`
+      `将按当前页面 UI 取关 ${targets.length} 个账号。账号之间间隔约 ${UNFOLLOW_ACTION_INTERVAL_MS / 1000} 秒，请确认列表无误后继续。`
     );
     if (!ok) {
       addLog("已取消取关。", "info");
@@ -1860,10 +2000,14 @@
 
     state.isUnfollowing = true;
     state.stopRequested = false;
+    state.isPaused = false;
     renderControls();
 
     let success = 0;
-    for (const candidate of targets) {
+    for (let index = 0; index < targets.length; index += 1) {
+      const candidate = targets[index];
+      if (state.stopRequested) break;
+      await waitWhilePaused();
       if (state.stopRequested) break;
       addLog(
         `取关中：${candidate.name} ${maskId(candidate.mid) || ""}`.trim(),
@@ -1871,10 +2015,10 @@
       );
       const done = await unfollowCandidate(candidate);
       if (done) success += 1;
-      await sleep(state.settings.actionDelayMs);
     }
 
     state.isUnfollowing = false;
+    state.isPaused = false;
     renderControls();
     renderStatus();
     addLog(`取关结束：成功点击 ${success}/${targets.length} 个。`, "info");
@@ -1894,7 +2038,7 @@
       mode === "inactive" ? state.settings.inactiveMaxActions : state.settings.maxActions,
       mode === "inactive" ? DEFAULT_SETTINGS.inactiveMaxActions : DEFAULT_SETTINGS.maxActions,
       1,
-      200
+      MAX_UNFOLLOW_ACTIONS
     );
     const targets = selected.slice(0, maxActions);
 
@@ -1903,15 +2047,8 @@
       return;
     }
 
-    const delay = apiDelayRange(mode);
-    const delayText =
-      delay.min === delay.max
-        ? `每次间隔约 ${Math.round(delay.min / 1000)} 秒`
-        : `每次间隔约 ${Math.round(delay.min / 1000)}-${Math.round(
-            delay.max / 1000
-          )} 秒`;
     const ok = window.confirm(
-      `将通过接口取关 ${targets.length} 个账号。请求串行执行，${delayText}。确认继续？`
+      `将通过接口取关 ${targets.length} 个账号。请求串行执行，每个账号间隔约 ${UNFOLLOW_ACTION_INTERVAL_MS / 1000} 秒。确认继续？`
     );
     if (!ok) {
       addLog("已取消接口取关。", "info");
@@ -1920,18 +2057,16 @@
 
     state.isUnfollowing = true;
     state.stopRequested = false;
+    state.isPaused = false;
     renderControls();
 
-    const batchSize = clampNumber(
-      state.settings.apiBatchSize,
-      DEFAULT_SETTINGS.apiBatchSize,
-      0,
-      20
-    );
     let success = 0;
     let attempted = 0;
 
-    for (const candidate of targets) {
+    for (let index = 0; index < targets.length; index += 1) {
+      const candidate = targets[index];
+      if (state.stopRequested) break;
+      await waitWhilePaused();
       if (state.stopRequested) break;
 
       addLog(
@@ -1949,24 +2084,14 @@
       }
 
       if (state.stopRequested || attempted >= targets.length) break;
-
-      if (batchSize > 0 && attempted % batchSize === 0) {
-        const pauseMs = randomInt(
-          DEFAULT_SETTINGS.apiBatchPauseMinMs,
-          DEFAULT_SETTINGS.apiBatchPauseMaxMs
-        );
-        if (pauseMs > 0) {
-          addLog(`批次暂停约 ${Math.round(pauseMs / 1000)} 秒。`, "info");
-          await sleepInterruptibly(pauseMs);
-        }
-      } else {
-        const waitMs = randomInt(delay.min, delay.max);
-        addLog(`等待约 ${Math.round(waitMs / 1000)} 秒后继续。`, "info");
-        await sleepInterruptibly(waitMs);
+      if (index < targets.length - 1) {
+        await sleepInterruptibly(UNFOLLOW_ACTION_INTERVAL_MS);
       }
     }
 
     state.isUnfollowing = false;
+    state.isPaused = false;
+    state.progress = "";
     renderControls();
     renderStatus();
     addLog(`接口取关结束：成功 ${success}/${attempted} 个。`, "info");
@@ -1974,7 +2099,21 @@
 
   function stopCurrentTask() {
     state.stopRequested = true;
+    state.isPaused = false;
     addLog("已请求停止，当前动作结束后会停下。", "warn");
+    renderControls();
+    renderStatus();
+  }
+
+  function togglePauseCurrentTask() {
+    if (!state.isScanning && !state.isUnfollowing) return;
+    state.isPaused = !state.isPaused;
+    addLog(
+      state.isPaused ? "已暂停，当前请求或动作完成后会停在下一步。" : "已继续。",
+      state.isPaused ? "warn" : "info"
+    );
+    renderControls();
+    renderStatus();
   }
 
   function addLog(message, type = "info") {
@@ -2041,6 +2180,13 @@
 
     wrapper.append(input, text);
     return wrapper;
+  }
+
+  function createCheckboxRow(...nodes) {
+    const row = document.createElement("div");
+    row.className = "buh-check-row";
+    row.append(...nodes);
+    return row;
   }
 
   function createFeatureCard({
@@ -2155,22 +2301,30 @@
             draft.targetName = value;
           },
         }),
+        createInput("检查账号上限", draft.nameCheckLimit, {
+          type: "number",
+          min: "20",
+          max: "5000",
+          onChange: (value) => {
+            draft.nameCheckLimit = value;
+          },
+        }),
         createInput("单次取关上限", draft.maxActions, {
           type: "number",
           min: "1",
-          max: "200",
+          max: String(MAX_UNFOLLOW_ACTIONS),
           onChange: (value) => {
             draft.maxActions = value;
           },
         }),
-        createInput("取关间隔秒数", draft.nameDelaySeconds, {
-          type: "number",
-          min: "1",
-          max: "120",
-          onChange: (value) => {
-            draft.nameDelaySeconds = value;
-          },
-        }),
+        createCheckboxRow(
+          createCheckbox("包含封禁账号", draft.nameIncludeBannedAccount, (checked) => {
+            draft.nameIncludeBannedAccount = checked;
+          }),
+          createCheckbox("包含互关好友", draft.nameIncludeMutualFriends, (checked) => {
+            draft.nameIncludeMutualFriends = checked;
+          })
+        ),
       ],
       actions: [],
       actionsRole: "name-actions",
@@ -2204,22 +2358,19 @@
         createInput("单次取关上限", draft.inactiveMaxActions, {
           type: "number",
           min: "1",
-          max: "200",
+          max: String(MAX_UNFOLLOW_ACTIONS),
           onChange: (value) => {
             draft.inactiveMaxActions = value;
           },
         }),
-        createInput("取关间隔秒数", draft.inactiveDelaySeconds, {
-          type: "number",
-          min: "1",
-          max: "120",
-          onChange: (value) => {
-            draft.inactiveDelaySeconds = value;
-          },
-        }),
-        createCheckbox("包含封禁账号", draft.includeBannedAccount, (checked) => {
-          draft.includeBannedAccount = checked;
-        }),
+        createCheckboxRow(
+          createCheckbox("包含封禁账号", draft.inactiveIncludeBannedAccount, (checked) => {
+            draft.inactiveIncludeBannedAccount = checked;
+          }),
+          createCheckbox("包含互关好友", draft.inactiveIncludeMutualFriends, (checked) => {
+            draft.inactiveIncludeMutualFriends = checked;
+          })
+        ),
       ],
       actions: [],
       actionsRole: "inactive-actions",
@@ -2285,6 +2436,11 @@
     });
     const unfollowApi = createButton("接口取关", "danger", unfollowSelectedByApi);
     const unfollowUi = createButton("页面取关", "ghost danger-text", unfollowSelectedByUi);
+    const pause = createButton(
+      state.isPaused ? "继续" : "暂停",
+      "ghost",
+      togglePauseCurrentTask
+    );
     const stop = createButton("停止", "ghost danger-text", stopCurrentTask);
     const clear = createButton("清空", "ghost", () => {
       resetCandidatesForScan("");
@@ -2302,10 +2458,12 @@
       unfollowApi,
       unfollowUi,
       clear,
+      pause,
       stop,
     ]) {
-      button.disabled = busy && button !== stop;
+      button.disabled = busy && button !== pause && button !== stop;
     }
+    pause.disabled = !busy;
     stop.disabled = !busy;
 
     const nameActions = root.querySelector('[data-role="name-actions"]');
@@ -2319,7 +2477,16 @@
       inactiveActions.append(scanInactive);
     }
 
-    controls.append(selfCheck, selectAll, selectNone, unfollowApi, unfollowUi, clear, stop);
+    controls.append(
+      selfCheck,
+      selectAll,
+      selectNone,
+      unfollowApi,
+      unfollowUi,
+      clear,
+      pause,
+      stop
+    );
   }
 
   function renderStatus() {
@@ -2333,7 +2500,8 @@
     const failed = all.filter((candidate) => candidate.status === "failed").length;
 
     const base = `已列出 ${all.length} 个，已选 ${selected} 个，完成 ${done} 个，失败 ${failed} 个`;
-    status.textContent = state.progress ? `${base}，${state.progress}` : base;
+    const extra = [state.isPaused ? "已暂停" : "", state.progress].filter(Boolean);
+    status.textContent = extra.length ? `${base}，${extra.join("，")}` : base;
   }
 
   function renderCandidateList() {
@@ -2408,12 +2576,31 @@
       if (candidate.details?.length) {
         const detail = document.createElement("div");
         detail.className = "buh-row-detail";
-        detail.textContent = candidate.details.join(" · ");
+        if (candidate.detailsExpanded) detail.classList.add("is-expanded");
+        detail.tabIndex = 0;
+        detail.setAttribute("role", "button");
+        detail.setAttribute("aria-expanded", String(Boolean(candidate.detailsExpanded)));
+        const detailText = candidate.details.join(" · ");
+        detail.textContent = detailText;
         const detailTitle = [
+          detailText,
           candidate.latestTitle ? `最近投稿：${candidate.latestTitle}` : "",
           candidate.latestDynamicTitle ? `最近动态：${candidate.latestDynamicTitle}` : "",
         ].filter(Boolean);
-        if (detailTitle.length) detail.title = detailTitle.join("\n");
+        detail.title = detailTitle.join("\n");
+        const toggleDetail = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          candidate.detailsExpanded = !candidate.detailsExpanded;
+          detail.classList.toggle("is-expanded", candidate.detailsExpanded);
+          detail.setAttribute("aria-expanded", String(candidate.detailsExpanded));
+          requestAnimationFrame(() => keepPanelInViewport(root));
+        };
+        detail.addEventListener("click", toggleDetail);
+        detail.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          toggleDetail(event);
+        });
         main.append(detail);
       }
 
